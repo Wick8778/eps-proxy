@@ -1,4 +1,19 @@
-// api/eps.js — Vercel Serverless Function
+// api/eps.js — 不需要 npm 套件，使用 Node.js 內建 https
+const https = require('https');
+
+function get(url, headers) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers }, res => {
+      let body = '';
+      const cookies = res.headers['set-cookie'] || [];
+      res.on('data', c => body += c);
+      res.on('end', () => resolve({ body, cookies, status: res.statusCode }));
+    });
+    req.on('error', reject);
+    req.setTimeout(9000, () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -6,23 +21,33 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const ticker = (req.query.ticker || '').trim().toUpperCase();
-  if (!ticker) return res.status(400).json({ error: 'ticker parameter is required' });
+  if (!ticker) return res.status(400).json({ error: 'ticker required' });
 
-  let yahooFinance;
-  try {
-    yahooFinance = require('yahoo-finance2').default;
-    yahooFinance.suppressNotices(['yahooSurvey']);
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to load yahoo-finance2: ' + e.message });
-  }
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36';
 
   try {
-    const result = await yahooFinance.quoteSummary(ticker, {
-      modules: ['earningsTrend', 'defaultKeyStatistics', 'price', 'financialData'],
-      validateResult: false,
+    // Step 1: 取得 cookies
+    const init = await get('https://finance.yahoo.com', { 'User-Agent': UA, 'Accept': 'text/html' });
+    const cookieStr = init.cookies.map(c => c.split(';')[0]).join('; ');
+
+    // Step 2: 取得 crumb
+    const crumbRes = await get('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+      'User-Agent': UA, 'Cookie': cookieStr,
     });
+    const crumb = crumbRes.body.trim();
+    if (!crumb || crumb.startsWith('<')) throw new Error('crumb failed: ' + crumb.slice(0, 80));
 
-    const trend = result.earningsTrend?.trend ?? [];
+    // Step 3: 取得 quoteSummary
+    const modules = 'earningsTrend,defaultKeyStatistics,price,financialData';
+    const apiUrl = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}` +
+                   `?modules=${modules}&crumb=${encodeURIComponent(crumb)}&formatted=false`;
+    const apiRes = await get(apiUrl, { 'User-Agent': UA, 'Cookie': cookieStr, 'Accept': 'application/json' });
+    if (apiRes.status !== 200) throw new Error(`Yahoo API ${apiRes.status}: ${apiRes.body.slice(0, 200)}`);
+
+    const qr = JSON.parse(apiRes.body)?.quoteSummary?.result?.[0];
+    if (!qr) throw new Error('no result');
+
+    const trend = qr.earningsTrend?.trend ?? [];
     const analystEstimates = {};
     for (const t of trend) {
       if (!['0y', '+1y', '+2y'].includes(t.period)) continue;
@@ -38,14 +63,14 @@ module.exports = async function handler(req, res) {
 
     const data = {
       ticker,
-      name:           result.price?.longName ?? result.price?.shortName ?? ticker,
-      currency:       result.price?.currency ?? 'USD',
-      price:          result.price?.regularMarketPrice ?? null,
-      ttmEps:         result.defaultKeyStatistics?.trailingEps ?? null,
-      forwardEps:     result.defaultKeyStatistics?.forwardEps  ?? null,
-      earningsGrowth: result.financialData?.earningsGrowth     ?? null,
+      name:           qr.price?.longName ?? qr.price?.shortName ?? ticker,
+      currency:       qr.price?.currency ?? 'USD',
+      price:          qr.price?.regularMarketPrice ?? null,
+      ttmEps:         qr.defaultKeyStatistics?.trailingEps ?? null,
+      forwardEps:     qr.defaultKeyStatistics?.forwardEps  ?? null,
+      earningsGrowth: qr.financialData?.earningsGrowth     ?? null,
       analystEstimates,
-      source: 'yahoo-finance2',
+      source: 'yahoo-direct',
       ts: Date.now(),
     };
 
@@ -53,7 +78,6 @@ module.exports = async function handler(req, res) {
     return res.status(200).json(data);
 
   } catch (err) {
-    console.error(`[eps] ${ticker}: ${err.message}`);
     return res.status(500).json({ error: err.message, ticker });
   }
 };
