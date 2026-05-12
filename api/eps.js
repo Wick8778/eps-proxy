@@ -1,4 +1,4 @@
-// api/eps.js — 不需要 npm 套件，使用 Node.js 內建 https
+// api/eps.js — Vercel Serverless Function (no npm dependencies)
 const https = require('https');
 
 function get(url, headers) {
@@ -12,6 +12,13 @@ function get(url, headers) {
     req.on('error', reject);
     req.setTimeout(9000, () => { req.destroy(); reject(new Error('timeout')); });
   });
+}
+
+// 提取純數字（Yahoo 有時回傳 {raw:x, fmt:"x"} 格式）
+function raw(v) {
+  if (v == null) return null;
+  if (typeof v === 'object') return v.raw ?? null;
+  return v;
 }
 
 module.exports = async function handler(req, res) {
@@ -51,24 +58,24 @@ module.exports = async function handler(req, res) {
     const analystEstimates = {};
     for (const t of trend) {
       if (!['0y', '+1y', '+2y'].includes(t.period)) continue;
-      const eps = t.earningsEstimate?.avg;
+      const eps = raw(t.earningsEstimate?.avg);
       if (eps == null) continue;
       analystEstimates[t.period] = {
         eps,
-        epsLow:   t.earningsEstimate?.low              ?? null,
-        epsHigh:  t.earningsEstimate?.high             ?? null,
-        analysts: t.earningsEstimate?.numberOfAnalysts ?? null,
+        epsLow:   raw(t.earningsEstimate?.low)              ?? null,
+        epsHigh:  raw(t.earningsEstimate?.high)             ?? null,
+        analysts: raw(t.earningsEstimate?.numberOfAnalysts) ?? null,
       };
     }
 
     const data = {
       ticker,
-      name:           qr.price?.longName ?? qr.price?.shortName ?? ticker,
-      currency:       qr.price?.currency ?? 'USD',
-      price:          qr.price?.regularMarketPrice ?? null,
-      ttmEps:         qr.defaultKeyStatistics?.trailingEps ?? null,
-      forwardEps:     qr.defaultKeyStatistics?.forwardEps  ?? null,
-      earningsGrowth: qr.financialData?.earningsGrowth     ?? null,
+      name:           raw(qr.price?.longName) ?? raw(qr.price?.shortName) ?? ticker,
+      currency:       raw(qr.price?.currency) ?? 'USD',
+      price:          raw(qr.price?.regularMarketPrice) ?? null,
+      ttmEps:         raw(qr.defaultKeyStatistics?.trailingEps) ?? null,
+      forwardEps:     raw(qr.defaultKeyStatistics?.forwardEps)  ?? null,
+      earningsGrowth: raw(qr.financialData?.earningsGrowth)     ?? null,
       analystEstimates,
       source: 'yahoo-direct',
       ts: Date.now(),
