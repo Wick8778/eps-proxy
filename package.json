@@ -1,0 +1,12 @@
+{
+  "name": "eps-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vercel serverless proxy for Yahoo Finance analyst EPS estimates",
+  "dependencies": {
+    "yahoo-finance2": "^2.11.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
